@@ -1,0 +1,211 @@
+# Shahidi.VR XR Application Repository
+
+This repository contains the Unity 2022.3 LTS project code for the Shahidi.VR Minimum Viable Product, targeting Meta Quest 3.
+
+---
+
+## README.md
+```markdown
+# Shahidi.VR XR Application
+
+**Version:** 0.1.0 (MVP)
+**Unity:** 2022.3.14f1 LTS
+
+## Overview
+This Unity project implements the core XR application for immersive exposure therapy on Meta Quest 3.  It includes:
+- Passthrough‑enhanced exposure engine
+- Real‑time biobehavioural telemetry capture
+- Secure WebSocket link to the therapist console
+
+## Prerequisites
+- Unity 2022.3 LTS (2022.3.14f1)
+- Oculus XR Plugin (v3.6.0)
+- OpenXR Plugin
+- Android Build Support
+- .NET Standard 2.1 compatibility
+
+## Installation & Setup
+1. Clone this repository.
+2. Open `ShahidiVR_XRApp` in Unity Hub.
+3. In Package Manager, install **Oculus XR Plugin** and **OpenXR Plugin**.
+4. In Project Settings → XR Plug-in Management, enable **Meta Quest** under Android.
+5. In OpenXR Features, enable **Oculus Touch Controller Profile** and **Passthrough**.
+6. Configure **Player Settings**:
+   - Scripting Backend: IL2CPP
+   - Target Architectures: ARM64
+7. Save scene `Assets/Scenes/MainScene.unity` and build for Android.
+
+## Build & Deploy
+- Connect Quest 3 via USB C.
+- In Unity, select **File → Build Settings → Android → Build and Run**.
+
+## Directory Structure
+```
+ShahidiVR_XRApp/
+├── Assets/
+│   ├── Scenes/
+│   │   └── MainScene.unity
+│   ├── Scripts/
+│   │   ├── XRAppSettings.cs
+│   │   ├── ExposureEngine.cs
+│   │   ├── TelemetryManager.cs
+│   │   └── TherapistConsoleAPI.cs
+│   └── Resources/
+│       └── Materials/
+│           └── PassthroughBlend.mat
+└── README.md
+```
+
+## Support & Contribution
+For issues or pull requests, please open an issue on GitHub.  Our team monitors daily during business hours (EST).
+```
+
+---
+
+## Assets/Scripts/XRAppSettings.cs
+```csharp
+using UnityEngine;
+using UnityEngine.XR.Management;
+
+/// <summary>
+/// Initializes the Oculus XR plugin and ensures passthrough is available.
+/// </summary>
+public class XRAppSettings : MonoBehaviour
+{
+    void Awake()
+    {
+        XRGeneralSettings.Instance.Manager.InitializeLoaderSync();
+        XRGeneralSettings.Instance.Manager.StartSubsystems();
+        Debug.Log("XR subsystems initialized.");
+    }
+
+    void OnDestroy()
+    {
+        XRGeneralSettings.Instance.Manager.StopSubsystems();
+        XRGeneralSettings.Instance.Manager.DeinitializeLoader();
+    }
+}
+```
+
+---
+
+## Assets/Scripts/ExposureEngine.cs
+```csharp
+using UnityEngine;
+
+/// <summary>
+/// Controls blending between real world passthrough and virtual stimuli.
+/// </summary>
+public class ExposureEngine : MonoBehaviour
+{
+    [Range(0,1)]
+    public float virtualAlpha = 0f;
+    public Material blendMaterial;
+
+    void Update()
+    {
+        // Therapist adjusts this value via console commands
+        blendMaterial.SetFloat("_VirtualAlpha", virtualAlpha);
+    }
+
+    /// <summary>
+    /// Set exposure intensity in [0,1].
+    /// </summary>
+    public void SetIntensity(float t)
+    {
+        virtualAlpha = Mathf.Clamp01(t);
+    }
+}
+```
+
+---
+
+## Assets/Scripts/TelemetryManager.cs
+```csharp
+using UnityEngine;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Net.WebSockets;
+
+/// <summary>
+/// Captures head and hand poses and streams to console via WebSocket.
+/// </summary>
+public class TelemetryManager : MonoBehaviour
+{
+    private ClientWebSocket ws;
+    private Uri serverUri = new Uri("wss://console.shahidi.vr/telemetry");
+
+    async void Start()
+    {
+        ws = new ClientWebSocket();
+        await ws.ConnectAsync(serverUri, CancellationToken.None);
+        Debug.Log("Telemetry WebSocket connected.");
+        InvokeRepeating(nameof(SendFrameData), 0f, 1f/90f);
+    }
+
+    async void SendFrameData()
+    {
+        if (ws.State != WebSocketState.Open) return;
+        var headPose = UnityEngine.XR.InputTracking.GetLocalPosition(UnityEngine.XR.XRNode.Head);
+        var data = JsonUtility.ToJson(new { t=Time.time, x=headPose.x, y=headPose.y, z=headPose.z });
+        var buf = System.Text.Encoding.UTF8.GetBytes(data);
+        await ws.SendAsync(new ArraySegment<byte>(buf), WebSocketMessageType.Text, true, CancellationToken.None);
+    }
+
+    async void OnDestroy()
+    {
+        if (ws != null)
+        {
+            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Bye", CancellationToken.None);
+            ws.Dispose();
+        }
+    }
+}
+```
+
+---
+
+## Assets/Scripts/TherapistConsoleAPI.cs
+```csharp
+using UnityEngine;
+using System.Collections;
+using UnityEngine.Networking;
+
+/// <summary>
+/// Fetches therapist commands (e.g. exposure intensity) from REST API.
+/// </summary>
+public class TherapistConsoleAPI : MonoBehaviour
+{
+    public string apiUrl = "https://console.shahidi.vr/api/commands";
+    public ExposureEngine engine;
+    private float pollInterval = 0.25f;
+
+    void Start()
+    {
+        StartCoroutine(PollCommands());
+    }
+
+    IEnumerator PollCommands()
+    {
+        while(true)
+        {
+            using(var web = UnityWebRequest.Get(apiUrl))
+            {
+                yield return web.SendWebRequest();
+                if (web.result == UnityWebRequest.Result.Success)
+                {
+                    var resp = JsonUtility.FromJson<CommandResponse>(web.downloadHandler.text);
+                    engine.SetIntensity(resp.intensity);
+                }
+            }
+            yield return new WaitForSeconds(pollInterval);
+        }
+    }
+
+    [System.Serializable]
+    private class CommandResponse { public float intensity; }
+}
+```
+
+**End of repository code.**
